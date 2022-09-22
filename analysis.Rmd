@@ -1,0 +1,694 @@
+---
+title: "Assignment3"
+author: "jayden beckwith"
+date: "13/05/2022"
+output:
+  word_document: default
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+**Part 1.** **Hypothesis testing for three groups** **(8 marks)**
+
+1.  Identify which variable in the dataset is associated with your biological question of
+    interest and group the samples by this variable. This should result in defining **three groups** of samples for that variable.
+    
+    LUAD - Aneuploidy score
+
+If you picked a continuous or discrete variable (Genome altered fraction, Aneuploidy score, Buffa hypoxia score, Mutation count) you will need to split your data into three groups using the quartiles: Min -- Q1, Q1 -- Q3, and Q3 -- Max. If you picked a categorical variable (Cancerstage), the groups are as described in the assignment matrix.  Make sure to filter out observations with values for your main grouping variable that are not suitable for analysis (suchas NA, 'not provided').
+
+```{r Libraries}
+
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+library(ggridges)
+library(knitr)
+library(edgeR)
+library(ggpubr)
+library(factoextra)
+library(broom)
+library(Hmisc)
+library(mixOmics)
+library(corrplot)
+library(FactoMineR)
+
+```
+
+```{r Q1 dataframe}
+load(file = "LUAD_data.RData")
+sample_data <- data.frame(samples)
+
+str(sample_data)
+
+```
+```{r Q1 data preprocessing}
+
+#count null vals - 13 nulls 
+sum_null_anueploidy <- sum(is.na(sample_data$Aneuploidy_score))
+
+#filter null vals of Aneuploidy_score from data set
+filter_Aneuploidy_data <- sample_data %>% filter(!is.na(Aneuploidy_score))
+head(filter_Aneuploidy_data)
+#filter by singular col only
+Aneuploidy <- filter_Aneuploidy_data %>% dplyr::select(Aneuploidy_score)
+
+#get summary for IQR of Aneuploidy_score col
+summary(Aneuploidy)
+```
+Getting the summary of Aneuploidy_score after data cleaning, it is now possible
+to subset the data via the IQR. 
+
+```{r Q1 data preprocessing pt2}
+#Make subset dataframes
+min_Q1 <- filter_Aneuploidy_data %>% filter(Aneuploidy_score <= 8)
+Q1_Q3 <- filter_Aneuploidy_data %>% filter(Aneuploidy_score  > 8 & 
+                                             Aneuploidy_score<= 21 )
+Q3_max <- filter_Aneuploidy_data %>% filter(Aneuploidy_score  > 21 & 
+                                             Aneuploidy_score<= 32 )
+#count samples in each group via no.rows
+total_rows <- c("min_Q1" = nrow(min_Q1), "Q1_Q3"= nrow(Q1_Q3), 
+                "Q3_max" = nrow(Q3_max))
+total_rows
+```
+
+2.	Compare age at diagnosis in the three groups: [2 marks]
+  a.	Produce a plot (of your choice) to show the distribution of age at diagnosis for each group and report the group mean age;
+  b.	State the null and alternative hypotheses;
+  c.	Perform the appropriate statistical test; 
+  d.	Draw your conclusion. 
+```{r Q2a}
+
+#filter null values from the diagnosis cols
+diag_min <- min_Q1 %>% filter(!is.na(Diagnosis_age)) %>% dplyr::select(Diagnosis_age)
+diag_q1_q3 <-  Q1_Q3 %>% filter(!is.na(Diagnosis_age)) %>% dplyr::select(Diagnosis_age)
+diag_q3_max <- Q3_max %>% filter(!is.na(Diagnosis_age)) %>% dplyr::select(Diagnosis_age)
+
+#get means of diagnosis age in each group
+
+#1st group - diagnosis_min 
+calc_mean_min<- mean(diag_min$Diagnosis_age)
+
+#2nd group - diagnosis q1 - q3
+calc_mean_mid<- mean(diag_q1_q3$Diagnosis_age)
+
+#3rd group - diagnosis q3 - max
+calc_mean_max<- mean(diag_q3_max$Diagnosis_age)
+
+get_means <- c("min_Q1" = calc_mean_min, "Q1_Q3"= calc_mean_mid, 
+                "Q3_max" = calc_mean_max)
+
+get_means
+#combine the diagnosis cols into separate df 
+combine_df <- rbind(diag_min, diag_q1_q3, diag_q3_max)
+#subset the df into one col corresponding to diagnosis age
+combine_df$Aneuploidy_df <- c(rep("min_Q1", nrow(diag_min)), rep("Q1_Q3", nrow(diag_q1_q3)),
+                                                         rep("Q3_max", 
+                                                             nrow(diag_q3_max)))
+head(combine_df)
+
+#plot diagnosis age on x and aneuploidy score on y using ggplot density ridges 
+combine_df %>% ggplot(aes(x = Diagnosis_age, y = Aneuploidy_df, fill=Aneuploidy_df)) +
+  #add mean line to graph 
+  geom_density_ridges(quantile_lines = TRUE, quantiles = TRUE, quantile_fun = function(Diagnosis_age,...)mean(Diagnosis_age)) +
+  # get 2nd quantile range - median and add transparency to figures 
+  stat_density_ridges(alpha=0.7) + 
+  labs(x = "Diagnosis age", y = "Aneuploidy Score", title = "Figure #1 - Aneuploidy Score vs Diagnosis Age of Lung Adenocarcinoma") +
+  theme(plot.title = element_text(hjust = 0.5)) + 
+  #change scaling 10 intervals of 10 
+  scale_x_continuous(breaks = seq(20, 100, by = 10))
+  
+
+```
+We can see that the mean group age of the corresponding groups tend to not overly differ between one another.
+The youngest age of diagnosis is evident to be Q3_max cohort with an average age 63.5 years old (1.dp).
+While, the oldest age of diagnosis is in cohort 1, min_Q1 with an average age of 67.6 years old (1.dp).
+
+Can use a statistical test - one way ANOVA. 
+
+2b)
+
+Hypothesis Testing
+
+Ho: There is no difference between group means for age of diagnosis and lung adenocarcinoma aneuploidy score. 
+
+H1: There is a difference between group means for age of diagnosis and lung adenocarcinoma aneuploidy score. 
+
+Assumptions:
+
+
+
+```{r q2c pt1}
+#One way ANOVA testing 
+model.anova <- aov(Diagnosis_age ~ Aneuploidy_df , data=combine_df)
+
+summary(model.anova)
+```
+```{r q2c pt2}
+#check summary of means 
+print(model.tables(model.anova,"means"),digits=3)
+```
+```{r q2c pt3}
+#perform post-hoc testing to check significance and confidence intervals
+TukeyHSD(model.anova)
+```
+q2d)
+
+From the results of the one-way ANOVA test, it was found that there was statistical significance in average age of diagnosis according to aneuploidy score groups of lung adenocarcinoma (F value = 6.04, p < 0.01). A Turkey post-hoc test revealed significant pairwise difference between Q1-Q3 and min-Q1 aneuploidy scores (p < 0.05) and between Q3-Max and min-Q1 (p < 0.01). Therefore, there is sufficient evidence that the null hypothesis can be reject and conclude that there exists a significant relationship between the average age of diagnosis and Aneuploidy score for lung adenocarcinoma. 
+
+
+
+3)	Perform a test to determine if there is a relationship between sex and your grouping: [2 marks]
+
+a.	Formulate the null and alternative hypotheses;
+b.	Perform the appropriate statistical test;
+c.	Draw your conclusion.
+
+3a)
+
+Hypothesis Testing
+
+Ho: Sex is not associated with lung adenocarcinoma aneuploidy score. 
+
+Ho: Sex is associated with lung adenocarcinoma aneuploidy score.
+
+Since aneuploidy score was converted to groups and gender is categorical, we need to check for indepdence of the two variables. Therefore, we can use chi-square test.
+
+```{r Q3a}
+
+
+min_g <- min_Q1 %>% filter(!is.na(Sex)) %>% dplyr::select(Sex)
+q1_q3_g <-  Q1_Q3 %>% filter(!is.na(Sex)) %>% dplyr::select(Sex)
+q3_max_g <- Q3_max %>% filter(!is.na(Sex)) %>% dplyr::select(Sex)
+
+combine_gender <- rbind(min_g, q1_q3_g, q3_max_g)
+
+
+#subset the df into one col corresponding to diagnosis age
+combine_gender$Aneuploidy <- c(rep("min_Q1", nrow(min_g)), rep("Q1_Q3", nrow(q1_q3_g)),
+                                                         rep("Q3_max", 
+                                                             nrow(q3_max_g)))
+head(combine_gender)
+```
+```{r}
+chisq.test(combine_gender$Sex, combine_gender$Aneuploidy, correct=FALSE)
+```
+3c) Since the p-value > 0.05, it can be concluded that there is not enough evidence for rejection of the null hypothesis. Therefore, it can be concluded that the the null hypothesis can be accepted and that there is no sex effect between the groups of aneuploidy score for lung adenocarcinoma. 
+
+4.	Pick an additional continuous or discrete variable of your choice (any variable that is not your main grouping variable) from the assignment matrix and perform the appropriate statistical test to compare the mean in the three groups (following the same steps as for question 2 above) [2 marks]
+
+
+```{r Q4}
+quest4_min <- min_Q1 %>% filter(!is.na(Buffa_hypoxia_score)) %>% dplyr::select(Buffa_hypoxia_score)
+quest4_q1_q3 <-  Q1_Q3 %>% filter(!is.na(Buffa_hypoxia_score)) %>% dplyr::select(Buffa_hypoxia_score)
+quest4_q3_max <- Q3_max %>% filter(!is.na(Buffa_hypoxia_score)) %>% dplyr::select(Buffa_hypoxia_score)
+
+
+combine_buffer <- rbind(quest4_min , quest4_q1_q3, quest4_q3_max)
+
+
+#subset the df into one col corresponding to diagnosis age
+combine_buffer$Aneuploidy_subdf<- c(rep("min_Q1", nrow(quest4_min)), rep("Q1_Q3", nrow(quest4_q1_q3)),
+                                                         rep("Q3_max", 
+                                                             nrow(quest4_q3_max)))
+head(combine_buffer)
+```
+```{r Q4 pt2}
+
+#1st group - buffer hypoxia score min 
+q4_mean_min<- mean(quest4_min$Buffa_hypoxia_score)
+
+#2nd group - buffer hypoxia score q1 - q3
+q4_mean_mid<- mean(quest4_q1_q3$Buffa_hypoxia_score)
+
+#3rd group - buffer hypoxia score q3 - max
+q4_calc_mean_max<- mean(quest4_q3_max$Buffa_hypoxia_score)
+
+q4_get_means <- c("min_Q1" = q4_mean_min, "Q1_Q3"= q4_mean_mid, 
+                "Q3_max" = q4_calc_mean_max)
+
+q4_get_means
+
+combine_buffer %>% ggplot(aes(x = Buffa_hypoxia_score, y = Aneuploidy_subdf, fill=Aneuploidy_subdf)) + stat_boxplot(geom ='errorbar') + geom_boxplot(show.legend = FALSE)  + 
+  stat_summary(fun=mean, geom="point", size=7, shape=20, colour="yellow", show.legend = FALSE) +
+  labs(x = "Buffer hypoxia score", y = "Aneuploidy score groups", title = "Figure #2 - Buffer Hypoxia Score vs Aneuploidy Score Groups \n for Lung Adenocarcinoma") +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+```{r}
+#plot diagnosis age on x and aneuploidy score on y using ggplot density ridges 
+combine_buffer %>% ggplot(aes(x = log(Buffa_hypoxia_score),  y = Aneuploidy_subdf, fill=Aneuploidy_subdf)) +
+  #add mean line to graph 
+  geom_density_ridges(quantile_lines = TRUE, quantiles = TRUE, quantile_fun = function(Buffa_hypoxia_score,...)mean(Buffa_hypoxia_score)) +
+  # get 2nd quantile range - median and add transparency to figures 
+  stat_density_ridges(alpha=0.7) + 
+  labs(x = "Diagnosis age", y = "Aneuploidy Score", title = "Figure #1 - Aneuploidy Score vs Diagnosis Age of Lung Adenocarcinoma") +
+  theme(plot.title = element_text(hjust = 0.5)) + 
+  #change scaling 10 intervals of 10 
+  scale_x_continuous(breaks = seq(20, 100, by = 10))
+```
+
+
+
+
+```{r Q4 pt3}
+#One way ANOVA testing 
+model2.anova <- aov(Buffa_hypoxia_score ~ Aneuploidy_subdf , data=combine_buffer)
+
+summary(model2.anova)
+```
+```{r Q4 pt4}
+#check summary of means 
+print(model.tables(model2.anova,"means"),digits=3)
+```
+```{r}
+shapiro.test(model2.anova$residuals)
+
+plot(model2.anova)
+
+```
+
+
+```{r}
+kruskal.test(Buffa_hypoxia_score ~ Aneuploidy_subdf , data=combine_buffer)
+```
+```{r}
+pairwise.wilcox.test(combine_buffer$Buffa_hypoxia_score, combine_buffer$Aneuploidy_subdf, p.adjust.method = "BH")
+```
+
+From the results of the one-way ANOVA test as also completed in Q2, it was found that there was highly statistical significance in average buffer hypoxia score according to aneuploidy score groups of lung adenocarcinoma (F value = 28, p <  0.0001).Therefore, there is sufficient evidence that the null hypothesis can be reject and conclude that there exists a highly statistically significant relationship between the average age of diagnosis and Aneuploidy score for lung adenocarcinoma. 
+
+
+Part 2. Differential Gene Expression Analysis (9 marks)
+
+Perform differential gene expression analysis using edgeR to identify genes that are differentially expressed. Include all three groups in your edgeR object and linear model, but perform the differential gene expression test for Group 1 vs Group 3.
+
+1.	Generate an edgeR object (DGEList function, make sure to include your group vector), filter out lowly expressed genes (filterByExpr) and calculate the normalisation factor. Report the number of genes before and after filtering. [2 marks]
+
+```{r preprocessing part B}
+min_val <- min_Q1 %>% dplyr::select(Aneuploidy_score)
+mid_val <- Q1_Q3  %>% dplyr::select(Aneuploidy_score)
+max_val <- Q3_max  %>% dplyr::select(Aneuploidy_score)
+
+
+combine_an <- rbind(min_val, mid_val, max_val)
+
+combine_an 
+
+combine_an$corr_groups<- c(rep("min_Q1", nrow(min_val)), rep("Q1_Q3", nrow(mid_val)),
+                                                         rep("Q3_max", 
+                                                             nrow(max_val)))
+
+#create RNA matrix with the corresponding corr_groups for evaluation 
+RNA_sample_df <- cbind(filter_Aneuploidy_data,combine_an["corr_groups"])
+head(RNA_sample_df)
+```
+
+```{r Part B }
+library(DESeq2)
+library(edgeR)
+library(DEFormats)
+
+#input matrix df
+matrix_df <- data.frame(raw_counts)
+
+#sub-sample the data with corr_groups in them
+samples_to_include_p2 <- rownames(RNA_sample_df)
+
+
+#subset raw counts
+raw_counts_subset_2 <- raw_counts[,samples_to_include_p2]
+
+
+#create matrix with group vector
+matrix_edgeR <- DGEList(counts=raw_counts_subset_2,  samples=samples_to_include_p2, group=RNA_sample_df$corr_groups) 
+
+```
+
+
+```{r filtered low count genes}
+
+# Need to define a grouping factor
+matrix_edgeR$RNA_sample_df$group <- matrix_edgeR$RNA_sample_df$corr_group
+  
+
+
+keep <- filterByExpr(matrix_edgeR)
+
+matrix_edgeR_filt <- matrix_edgeR[keep, ,keep.lib.sizes=FALSE]
+
+
+```
+
+```{r display dimensions of genes counts}
+dim(matrix_edgeR$counts)
+dim(matrix_edgeR_filt$counts)
+
+table(keep)
+```
+We can see that 3060 genes were filtered out from the data set due to low expression.
+```{r calc norm factors}
+#get normal vals in dataset 
+matrix_edgeR_filt_norm <- calcNormFactors(matrix_edgeR_filt)
+
+
+head(matrix_edgeR_filt_norm$samples)
+
+```
+2.	Transform the gene expression values after filtering and normalisation (using a logarithm transformation to base 2 and the cpm function with prior.count=1). Produce a plot of your choice to show the distribution of gene expression values for the first 50 samples. [2 marks]
+
+```{r convert to cpm and display plot}
+
+#covnert to cpm log of the new filtered datas et 
+matrix_lcpm <- matrix_edgeR_filt_norm %>%
+  cpm(log=TRUE, prior.count=1) # adding prior.count=1 to avoid taking log of 0
+
+#set as data frame
+matrix_df <- matrix_lcpm%>%
+  as.data.frame()
+
+#visualise first 50 gene exp values 
+g50 <- matrix_df[,1:50] %>%
+  rownames_to_column(var="gene") %>%
+  gather(key="Sample", value = "logCPM(raw)",-gene) %>%
+  ggplot(aes(x = `logCPM(raw)`, colour=Sample)) +
+  geom_density(show.legend=FALSE) + 
+  labs(title = "Figure #3 - Visualising First 50 Gene Expression Values After Normalisation") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+g50
+
+
+```
+3.	Create a design matrix (using model.matrix function), estimate dispersion (estimateDisp) and fit a generalised linear model using the glmFit function. Use the glmTreat function to perform thresholded testing comparing Group 1 and Group 3 with a log fold change (logFC) cut-off of 0.5 (lfc=0.5). [3 marks]
+```{r Design matrix relevelling}
+matrix_edgeR_filt_norm$samples$group
+
+matrix_edgeR_filt_norm$samples$group <- relevel(matrix_edgeR_filt_norm$samples$group, "min_Q1")
+
+```
+```{r Design matrix}
+
+#design matrix - set first col as the reference = intercept = min-q1
+design_assign <- model.matrix(~ matrix_edgeR_filt_norm$samples$group, matrix_edgeR_filt_norm$samples)
+
+head(design_assign)
+```
+```{r estimate dispersion}
+matrix_edgeR_filt_norm<- estimateDisp(matrix_edgeR_filt_norm, design_assign)
+matrix_edgeR_filt_norm
+```
+
+```{r plot of bcv}
+plotBCV(matrix_edgeR_filt_norm, main="Figure #4 - BCV Plot of Common vs Trend Dispersion")
+```
+```{r fit generalised model}
+fit <- glmFit(matrix_edgeR_filt_norm, design_assign)
+#coefficients col 3 of the in the design matrix
+treat <- glmTreat(fit, coef=3, lfc=0.5)
+
+#show top differentially expressed genes (DEG)
+topTags(treat)
+```
+4.	Summarise how many genes were found to be significantly down- and up-regulated in Group 3 compared to Group 1. [1 mark]
+
+```{r part b q4 upregulated genes}
+
+#summarise the total number of up and down regulated genes in the current comparison 
+summary(decideTests(treat))
+
+```
+```{r}
+plotMD(treat, main="Figure #5 - Comparison of Significantly DEGs in Group 1 and 3")
+abline(h=c(-1, 1), col="blue") 
+```
+
+
+
+5.	Report the top 10 differentially expressed genes sorted by p-value. [1 mark]
+
+
+```{r get p vals}
+#get top 10 genes corresponding to p_values
+top_10_genes <- topTags(treat, n=10 ,sort.by ="PValue")
+top_10_genes[1:10,4]
+```
+Part 3. Principal Component Analysis (5 marks)
+
+1.	Perform a Principal Component Analysis (PCA) on all genes (from Part 2 Question 2). Use logCPM normalised values and the arguments center = TRUE and scale = TRUE in the PCA. Include all 3 biological groups. [2 marks]
+
+```{r pca transpose}
+transpose_mat_data <- t(matrix_df) %>% as.data.frame()
+
+transpose_mat <- cbind(group = matrix_edgeR_filt_norm$samples$group, transpose_mat_data)
+
+res.pca <-  prcomp(transpose_mat_data, center = TRUE, scale = TRUE)
+```
+
+
+
+2.	Output the sample plot for the first two principal components. Colour the plot by the biological groups. Comment on the graph obtained. [2 marks] 
+
+
+```{r pca plot}
+fviz_pca_ind(res.pca, geom.ind = "point", pointshape = 21, 
+             pointsize = 4, 
+             fill.ind = matrix_edgeR_filt_norm$samples$group, 
+             col.ind = "black", 
+             palette = "jco", 
+             addEllipses = TRUE,
+             label = "var",
+             col.var = "black",
+             repel = TRUE,
+             legend.title = "Groups", title = 'Figure #6 - Explained Variance for First Two PCs') 
+```
+
+3.	Are two components enough to explain most of the variance in the data? Provide justification to support your conclusion. [1 mark]
+
+
+```{r pca scree plot}
+fviz_eig(res.pca, addlabels = TRUE, title = "Figure #7 - Scree Plot of PCs")
+```
+
+seems that different Aneuploidy Score groups do not separate or cluster across the two Principal components of the data. There are clusters, but these are not explained by the class variable. It can be inferred then that the major source of variation is not attributed to Anueploidy score.  
+ 
+ 
+Part 4. Clustering and Classification (7 marks)
+
+1.	Carry out a K-means clustering on all differentially expressed genes (identified in Part 2 Question 4) with k=2 and nstart=25. Use logCPM normalized values and only include samples from Group 1 and Group 3. [2 marks]
+
+```{r exp genes table}
+exp_genes <- topTags(treat, n=Inf) %>% as.data.frame()
+
+
+edger_mat <- exp_genes %>% filter(FDR < 0.05)
+
+edger_mat
+
+#treat$samples %>% filter(group == "Q3_max")
+
+```
+
+
+```{r part4 q1}
+
+get_genes <- edger_mat %>%
+  #convert rownames to column called "gene"
+  rownames_to_column(var="gene") %>%
+  # pull gene names as a vector
+  pull(gene)
+
+# Subset gene matrix to only get DEGs
+sub_clust <- matrix_lcpm[get_genes,] 
+
+# Scale the matrix
+hi_clust_m <- sub_clust %>% 
+  # transpose the matrix so genes are as columns
+  t() %>% 
+  # apply scaling to each column of the matrix (genes)
+  scale() %>% 
+  # transpose back so genes are as rows again
+  t() 
+```
+
+```{r part4 q1 pt2}
+set.seed(1)
+
+#set cluster at centers/k = 2 and start at n = 25
+clusters <- kmeans(t(hi_clust_m), centers = 2, iter.max = 100, nstart = 25) 
+
+#plot k means 
+fviz_cluster(clusters, data = t(hi_clust_m),
+             palette = "npg", 
+             geom = "point",
+             ellipse.type = "convex", 
+             ggtheme = theme_bw()
+             ) + labs(title="Figure #8 - K-means Clustering of Samples of Differentially Expressed Genes")
+```
+2.	Based on the clusters, what number and proportion of Group 1 and Group 3 samples were clustered together? [1 mark]
+
+
+```{r see size }
+str(clusters$size)
+```
+Out of 515 samples of the 164 genes differentially expressed, 61 samples made up the 1st cluster and the 2nd cluster made up 450 samples. The proportion of samples clustered together was 
+
+3.	Carry out a hierarchical clustering using squared Euclidian distance and Ward’s agglomeration method ('ward.D') on all differentially expressed genes for samples
+from Group 1 and Group 3. Comment on the plot that is obtained. [2 marks]
+
+
+
+
+
+```{r}
+#clustering as per logcpm values 
+sub_clust <- matrix_lcpm[get_genes,] 
+
+hclust_m_sam <- sub_clust %>% scale() %>% t()
+
+euc_dist <- dist(hclust_m_sam)
+
+euc_dist_sq <- euc_dist^2
+
+eucl_sq_clust_sam <- hclust(euc_dist_sq, method="ward.D")
+
+plot(eucl_sq_clust_sam, labels=FALSE, hang = -1, cex = 0.6, main="Figure #9 - Hierarchical Clustering of Samples of Differentially Expressed Genes")
+
+rect.hclust(eucl_sq_clust_sam , k=2, border = "red")
+
+```
+```{r}
+
+```
+
+
+
+
+4.	Based on the first split in the hierarchy, what number and proportion of Group 1 and Group 3 samples were clustered together? [1 mark]
+```{r clustering q4}
+
+cluster_h<-cutree(eucl_sq_clust_sam, k=2) 
+table(cluster_h)
+```
+
+
+5.	Comment on which approach seems to be better for clustering samples based on the differentially expressed genes. [1 mark]
+
+
+
+Part 5.  Correlation of methylation and gene expression (10 marks)
+
+In this part of the assignment, you will look at correlation of gene expression with DNA methylation. You will evaluate whether gene expression and DNA methylation relationship can be modelled using linear regression. 
+
+PLAU (ENSG00000122861)
+
+
+1.	Produce a boxplot of logCPM expression of the gene of interest. Colour the boxplots by the biological group and include all 3 groups. Check if this gene was differentially expressed in Group 3 compared to Group 1 (refer to Part 2 Question 4).  
+
+```{r p5 q1 pt1}
+
+#gene gene of interest from df 
+meth_gene <- matrix_df[c("PLAU|ENSG00000122861"),]
+meth_gene
+#get transpose of the matrix
+p5_df <- t(meth_gene)
+
+#set aneuploidy groups to df
+p5_df <- cbind(p5_df,matrix_edgeR_filt_norm$samples[1:1])
+#rename for plotting 
+names(p5_df)[1] <- "PLAU"
+
+head(p5_df)
+#plot boxplot 
+p5_df %>% ggplot(aes(x = PLAU, y = group, fill=group)) + stat_boxplot(geom ='errorbar') + geom_boxplot()  + 
+  labs(x = "PLAU (ENSG00000122861) gene LogCPM", y = "Anueploidy Score Groups", title = "Figure #10 - PLAU gene and Aneuploidy Groups \n for Lung Adenocarcinoma") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+```
+
+```{r p5 q1 pt2}
+#check if this gene was differentially expressed
+summary(decideTests(treat[c("PLAU|ENSG00000122861"),]))
+```
+This gene was not differentially expressed as per between the comparison of group 1 and group 3. 
+
+
+2.Read in the methylation data (Methylation_TCGA.csv found here) and subset your data by the relevant gene and cancer type. The processed DNA methylation data (beta values) measure the level of methylation at known CpG sites (probes) and range from 0 – unmethylated to 1 – fully methylated. 
+Produce scatter plots along with the line of best fit showing the relationship between beta values of each methylation probe and gene expression (logCPM). You should end up with multiple plots (one plot per methylation probe).  [2 marks]
+
+
+```{r p5 q2}
+methylation_data = read.csv("Methylation_TCGA.csv")
+
+Subset_meth <- methylation_data %>% filter(Gene == "PLAU", Cancer_type == "LUAD")
+head(Subset_meth)
+```
+
+```{r get q5 table}
+
+#cbind anueploid samples to LogCPM values
+aneuploid_p5 <- cbind(filter_Aneuploidy_data, p5_df)
+
+
+#inner join the two data frames, set all = False for inner-join and match via patient ID. 
+join_meth <- merge(aneuploid_p5, Subset_meth, by = "patient", all=FALSE)
+
+
+```
+
+
+
+```{r}
+ggplot(join_meth, aes(beta_val, PLAU)) +
+  geom_point() +
+  geom_smooth(method = "lm") + stat_cor(method = "pearson", label.x = 0, label.y = 1) +
+  facet_wrap(~probe, ncol=4, scales = "fixed") + labs(title = "Figure #11 - Linear Regression Model of CpG sites vs PLAU Gene Expression",
+                                                      x="CpG sites (beta values per each site)", y="PLAU gene expression (logCPM)") + 
+  theme(plot.title = element_text(hjust = 0.5))
+```
+3.	Perform Pearson’s correlation between the beta values for each probe and the gene expression, and report the correlation coefficients. Comment on the observed correlations. [2 marks]
+
+```{r p5 q3}
+
+
+dna_meth.rcorr <- join_meth %>% filter(probe =="cg00303111") %>%
+   dplyr::select(beta_val, PLAU) %>% 
+  as.matrix() %>%
+  rcorr(type="pearson")
+
+dna_meth.rcorr$r
+
+
+```
+4.	Select the top correlated probes (with the absolute value of the correlation coefficient > 0.5). Perform multiple linear regression analysis to model the gene expression by the beta values of these top correlated probes. Report intercept and slope coefficients, adjusted R-squared, the residual squared error and the p-value. [2 marks]
+
+Top 3 - absolute Pearson Correlation values - cg00303111, cg23837109 and cg04939496
+
+```{r p5 q4}
+
+#set target for top absolutes correlated sites 
+target <- c("cg00303111", "cg23837109" ,"cg04939496")
+#filter the data 
+filt <- join_meth %>% filter(probe == target)
+
+#apply to model for 2 variables with filtered group
+model <- lm(PLAU ~ beta_val + probe, data = filt)
+summary(model)
+```
+
+5.	Explore model diagnostic plots and comment on whether linear regression model was the appropriate model for this data. [2 marks]
+
+```{r plot diagnosis}
+library(lmtest)
+plot(model)
+shapiro.test(model$residuals)
+bptest(model)
+```
+```{r}
+library(olsrr)
+ols_test_normality(model)
+```
+
